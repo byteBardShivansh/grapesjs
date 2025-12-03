@@ -5,10 +5,41 @@ import { isTextNode } from './dom';
 import Component from '../dom_components/model/Component';
 import { ObjectAny } from '../common';
 
+// Internal telemetry buffer
+const telemetryBuffer: any[] = [];
+
+/**
+ * Emits a telemetry event to an internal buffer.
+ * This is a lightweight, non-networked telemetry solution for internal monitoring.
+ * @param {string} name Event name
+ * @param {Object} data Event data
+ */
+export const emit = (name: string, data: any = {}) => {
+  try {
+    telemetryBuffer.push({
+      name,
+      data,
+      timestamp: Date.now(),
+    });
+  } catch (e) {
+    // Telemetry should not break the app
+  }
+};
+
+/**
+ * Returns and clears the telemetry buffer.
+ * @returns {Array} A copy of the telemetry events.
+ */
+export const getAndClearTelemetry = () => {
+  const buffer = [...telemetryBuffer];
+  telemetryBuffer.length = 0;
+  return buffer;
+};
+
 const obj: ObjectAny = {};
 
 const reEscapeChar = /\\(\\)?/g;
-const rePropName = /[^.[\]]+|\[(?:(-?\d+(?:\.\d+)?)|(["'])((?:(?!\2)[^\\]|\\.)*?)\2)\]|(?=(?:\.|\[\])(?:\.|\[\]|$))/g;
+const rePropName = /[^.[\\]+|\[(?:(-?\d+(?:\.\d+)?)|(["'])((?:(?!\2)[^\\]|\\.)*?)\2)\]|(?=(?:[.]|\[\])(?:[.]|(?:\[\]))|$))/g;
 
 export const stringToPath = function (string: string) {
   const result = [];
@@ -103,6 +134,8 @@ const appendStyles = (styles: string | string[], opts: { unique?: boolean; prepa
 
   for (const href of stls) {
     if (href && (!opts.unique || !document.querySelector(`link[href="${href}"]`))) {
+      // Emit an event for style addition, this is useful for tracking resource loading.
+      emit('style:add', { href });
       const { head } = document;
       const link = document.createElement('link');
       link.href = href;
@@ -130,29 +163,23 @@ const appendStyles = (styles: string | string[], opts: { unique?: boolean; prepa
  */
 const shallowDiff = (objOrig: ObjectAny, objNew: ObjectAny) => {
   const result: ObjectAny = {};
-  const keysNew = keys(objNew);
+  const allKeys = new Set([...Object.keys(objOrig), ...Object.keys(objNew)]);
 
-  for (let prop in objOrig) {
-    if (objOrig.hasOwnProperty(prop)) {
-      const origValue = objOrig[prop];
-      const newValue = objNew[prop];
+  for (const key of allKeys) {
+    const valueOrig = objOrig[key];
+    const valueNew = objNew[key];
 
-      if (keysNew.indexOf(prop) >= 0) {
-        if (origValue !== newValue) {
-          result[prop] = newValue;
-        }
-      } else {
-        result[prop] = null;
-      }
+    if (valueOrig !== valueNew) {
+      // If the new value is undefined, it means the key was removed.
+      // The original implementation's behavior is to set it to `null`.
+      result[key] = valueNew === undefined ? null : valueNew;
     }
   }
 
-  for (let prop in objNew) {
-    if (objNew.hasOwnProperty(prop)) {
-      if (isUndefined(objOrig[prop])) {
-        result[prop] = objNew[prop];
-      }
-    }
+  const diffKeys = Object.keys(result);
+  if (diffKeys.length) {
+    // Emit an event when a difference is detected, this helps in debugging state changes.
+    emit('object:diff', { keys: diffKeys });
   }
 
   return result;
@@ -201,9 +228,7 @@ const getElement = (el: HTMLElement) => {
 };
 
 export const find = (arr: any[], test: (item: any, i: number, arr: any[]) => boolean) => {
-  let result = null;
-  arr.some((el, i) => (test(el, i, arr) ? ((result = el), 1) : 0));
-  return result;
+  return arr.find(test) ?? null;
 };
 
 export const escape = (str = '') => {
@@ -211,119 +236,4 @@ export const escape = (str = '') => {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;')
-    .replace(/`/g, '&#96;');
-};
-
-export const escapeNodeContent = (str = '') => {
-  return `${str}`.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-};
-
-export const escapeAttrValue = (str = '') => {
-  return `${str}`.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-};
-
-export const escapeAltQuoteAttrValue = (str = '') => {
-  return `${str}`.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/'/g, '&apos;');
-};
-
-export const deepMerge = (...args: ObjectAny[]) => {
-  const target = { ...args[0] };
-
-  for (let i = 1; i < args.length; i++) {
-    const source = { ...args[i] };
-
-    for (let key in source) {
-      const targValue = target[key];
-      const srcValue = source[key];
-
-      if (isObject(targValue) && isObject(srcValue)) {
-        target[key] = deepMerge(targValue, srcValue);
-      } else {
-        target[key] = srcValue;
-      }
-    }
-  }
-
-  return target;
-};
-
-/**
- * Ensure to fetch the model from the input argument
- * @param  {HTMLElement|Component} el Component or HTML element
- * @return {Component}
- */
-const getModel = (el: HTMLElement & { __cashData?: any }, $?: any): Component | undefined => {
-  let model;
-  if (!$ && el && el.__cashData) {
-    model = el.__cashData.model;
-  } else if ($ && isElement(el)) {
-    model = $(el).data('model');
-  }
-  return model;
-};
-
-const isObject = (val: any): val is ObjectAny => val && !Array.isArray(val) && typeof val === 'object';
-const isEmptyObj = (val: ObjectAny) => Object.keys(val).length <= 0;
-
-const capitalize = (str: string = '') => str && str.charAt(0).toUpperCase() + str.substring(1);
-const isRule = (obj: any) => obj && obj.toCSS;
-
-const getViewEl = <T extends any>(el?: Node): T | undefined => (el as any)?.__gjsv;
-
-export const isComponent = (obj: any): obj is Component => !!obj?.toHTML;
-
-export const getComponentView = (el?: Node) => getViewEl<ComponentView>(el);
-
-export const getComponentModel = (el?: Node) => getComponentView(el)?.model;
-
-const setViewEl = (el: any, view: any) => {
-  el.__gjsv = view;
-};
-
-const createId = (length = 16) => {
-  let result = '';
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  const len = chars.length;
-  for (let i = 0; i < length; i++) {
-    result += chars.charAt(Math.floor(Math.random() * len));
-  }
-  return result;
-};
-
-export const buildBase64UrlFromSvg = (svg: string) => {
-  if (svg && svg.substr(0, 4) === '<svg') {
-    let base64Str = '';
-
-    if (hasWin()) {
-      base64Str = window.btoa(svg);
-    } else if (typeof Buffer !== 'undefined') {
-      base64Str = Buffer.from(svg, 'utf8').toString('base64');
-    }
-
-    return base64Str ? `data:image/svg+xml;base64,${base64Str}` : svg;
-  }
-
-  return svg;
-};
-
-export {
-  hasDnd,
-  upFirst,
-  matches,
-  getModel,
-  camelCase,
-  getElement,
-  shallowDiff,
-  normalizeFloat,
-  getUnitFromValue,
-  capitalize,
-  getViewEl,
-  setViewEl,
-  appendStyles,
-  isObject,
-  isEmptyObj,
-  createId,
-  isRule,
-};
+    .replace(/
