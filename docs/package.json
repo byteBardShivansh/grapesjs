@@ -16,7 +16,7 @@
     "*.scss"
   ],
   "dependencies": {
-    "codemirror": "5.63.0",
+    "codemirror": "5.65.20",
     "codemirror-formatting": "1.0.0",
     "html-entities": "~1.4.0"
   },
